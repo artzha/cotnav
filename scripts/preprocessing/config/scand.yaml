@@ -1,0 +1,28 @@
+dataset: "scand"
+root_dir: ./data/scand_raw
+n_jobs: 8
+
+topics:
+  rgb:
+    ros_topic: ["/image_raw/compressed", "/camera/rgb/image_raw/compressed"]
+    save_prefix: ["front_rgb"]                # same length as ros_topic
+  odometry:
+    ros_topic: "/odom"
+    save_prefix: "odometry"
+  control:
+    ros_topic: "/navigation/cmd_vel"
+    save_prefix: "control"
+  tf_static:
+    ros_topic: ["/tf"]
+    save_prefix: "tf"
+    frames: []      # optional pairs [["base_link","camera_link"], ...]
+
+filters:
+  - name: "odometry_filter"
+    type: "odometry"
+    effect: "remove"
+    params:
+      horizon_frames: 10  
+      min_distance: 0.1
+      max_ang_vel: 180 # deg/s
+      max_ang_disp: 180 # deg
