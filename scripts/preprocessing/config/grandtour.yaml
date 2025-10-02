@@ -1,0 +1,48 @@
+dataset: "grandtour"
+root_dir: ./data/grandtour_raw
+save_video: True
+debug_mode: False
+n_jobs: 2
+
+topics:
+  rgb:
+    ros_topic: [
+      "/boxi/alphasense/left/image_raw/compressed",
+      "/boxi/alphasense/left/camera_info",
+      "/boxi/alphasense/front_center/image_raw/compressed",
+      /boxi/alphasense/front_center/camera_info,
+      "/boxi/alphasense/right/image_raw/compressed",
+      /boxi/alphasense/right/camera_info
+      ]
+    save_prefix: [
+      "left_camera",
+      "left_camera_info", 
+      "front_camera", 
+      "front_camera_info",
+      "right_camera",
+      "right_camera_info"
+    ]
+  odometry:
+    ros_topic: "/boxi/dlio/lidar_map_odometry"
+    save_prefix: "odometry"
+  tf:
+    ros_topic: ["/tf_static"]
+    save_prefix: "tf_static"
+    frames: [
+      ["base", "alphasense_left"],
+      ["base", "alphasense_front_center"],
+      ["base", "alphasense_right"],
+      ["base", "hesai_lidar"],
+      ["base", "dlio_map"],
+      ["hesai_lidar", "dlio_map"]
+    ]      # optional pairs [["base_link","camera_link"], ...]
+
+# filters:
+  # - name: "odometry_filter"
+  #   type: "odometry"
+  #   effect: "remove"
+  #   params:
+  #     horizon_frames: 10  
+  #     min_distance: 0.1
+  #     max_ang_vel: 180 # deg/s
+  #     max_ang_disp: 180 # deg

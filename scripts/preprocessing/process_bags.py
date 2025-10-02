@@ -11,7 +11,7 @@ from scripts.utils.loader_utils import construct_filters
 
 from scripts.preprocessing.process_utils import inspect_and_stream_local
 
-DEBUG_MODE=True
+from cotnav.dataset.dataset_helpers import get_mission_id
 
 # ------------------ helpers ----------------------------------------------
 def load_cfg(fp: Path) -> dict:
@@ -52,14 +52,17 @@ def main():
         logging.info("No local sessions (folders containing *.bag) found — exiting.")
         return
 
-    if DEBUG_MODE:
+    debug_mode = cfg.get('debug_mode', False)
+    if debug_mode:
         dfs = []
         for sess_dir in sessions:
             df = inspect_and_stream_local(
+                cfg,
                 sess_dir=str(sess_dir),
                 save_root_dir=save_root,
                 topics_dict=topics_cfg,
-                filters_dict=filters
+                filters_dict=filters,
+                debug_mode=debug_mode
             )
             if isinstance(df, pd.DataFrame) and not df.empty:
                 dfs.append(df)
@@ -69,10 +72,12 @@ def main():
         with tqdm(total=len(sessions), desc="Sessions") as pbar:
             for df in Parallel(n_jobs=n_jobs, backend="loky")(
                 delayed(inspect_and_stream_local)(
+                    cfg,
                     sess_dir=str(sess),
                     save_root_dir=save_root,
                     topics_dict=topics_cfg,
-                    filters_dict=filters
+                    filters_dict=filters,
+                    debug_mode=debug_mode
                 ) for sess in sessions
             ):
                 if isinstance(df, pd.DataFrame) and not df.empty:
@@ -101,9 +106,9 @@ def main():
         with txt_path.open("w") as f:
             f.write("ride_name,child_dt,video,odometry,controls\n")
             for r in rows:
-                ride_info = get_frodo_raw_id(r["video"]) if r.get("video") else ("unknown",)
+                ride_info = get_mission_id(r["video"], cfg) if r.get("video") else ("unknown",)
                 ride_name = " ".join(ride_info)
-                f.write(f"{ride_name},{r.get('child_dt','')},{r.get('video','')},{r.get('odometry','')},{r.get('controls','')}\n")
+                f.write(f"{ride_name},{r.get('video','')},{r.get('odometry','')},{r.get('controls','')}\n")
 
     logging.info(f"✅  {len(dfs)}/{len(sessions)} sessions processed "
                  f"({len(combined)} rows total, {len(rides)} ride manifests)")

@@ -5,7 +5,16 @@ import numpy as np
 import pandas as pd
 
 from scripts.utils.log_utils import logging
-from cotnav.dataset.dataset_helpers import set_scand_dir
+from scripts.preprocessing.bag_utils import (
+    get_ros_type, 
+    process_rgb,
+    process_odometry,
+    process_tf,
+    transforms_to_yaml
+)
+from cotnav.dataset.dataset_helpers import (get_dataset_info, set_dataset_dir)
+
+DEBUG_MODE=False
 
 # ───────────────────────── local bag indexing ────────────────────────────
 def index_bags_by_topic_local(
@@ -45,25 +54,27 @@ def index_bags_by_topic_local(
                 for key, ros_topics in target_topics.items():
                     if any(t in avail for t in ros_topics):
                         bags_dict[key].append(bag)
-                        break
         except Exception as e:
             logging.warning(f"[index] Failed to read {bag}: {e}")
             continue
-
     return bags_dict
 
 # ───────────────────────── local orchestrator  ───────────────────────────
 def inspect_and_stream_local(
+    cfg: Dict, 
     sess_dir: str | Path,
     save_root_dir: str | Path,
     topics_dict: Dict[str, Dict[str, any]],
-    filters_dict: Dict[str, any] | None = None
+    filters_dict: Dict[str, any] | None = None,
+    debug_mode=False
 ):
     """
     Local-only counterpart to inspect_and_stream:
       * sess_dir: local directory containing *.bag (recursively)
       * topics_dict: same structure as before (keys like 'rgb', 'odometry', 'control', 'tf_static', etc.)
     """
+    global DEBUG_MODE
+    DEBUG_MODE = debug_mode
     sess_dir = Path(sess_dir)
     save_root_dir = Path(save_root_dir)
 
@@ -72,10 +83,9 @@ def inspect_and_stream_local(
     if not bags_dict:
         logging.info(f"[local] No matching bags in {sess_dir}")
         return pd.DataFrame()
-
+    
     # A simple parent/child naming scheme for local sessions:
-    parent_dt = sess_dir.name           # parent identifier
-    robot = "local"                     # if you don’t have per-robot splits
+    dataset, robot = get_dataset_info(cfg)
     child_groups = {"chunk0": []}       # single chunk by default
 
     # -------------------- process odometry (optional) ---------------------
@@ -86,7 +96,7 @@ def inspect_and_stream_local(
             odom_art = process_odometry(
                 bags=bags_dict[odom_key],
                 topic=topics_dict[odom_key]["ros_topic"],
-                out_dir="",                 # defer writing; we’ll write per-chunk dir
+                out_dir="",
                 save_prefix=topics_dict[odom_key]["save_prefix"],
                 save_file=False
             )
@@ -112,7 +122,7 @@ def inspect_and_stream_local(
             static_transforms = tf_art.get("transforms", {})
         except Exception as e:
             logging.warning(f"[local] TF static extraction failed in {sess_dir}: {e}")
-
+   
     # -------------------- process controls (optional) ---------------------
     ctrl_key = next((k for k, v in topics_dict.items()
                      if v.get("save_prefix") == "control"), None)
@@ -162,34 +172,30 @@ def inspect_and_stream_local(
 
     # -------------------- images & metadata per (single) chunk ------------
     metadata_rows = []
-    for key_seg, local_paths in bags_dict.items():
+    for key_seg, local_bags in bags_dict.items():
         spec = topics_dict[key_seg]
         ros_topics    = spec["ros_topic"] if isinstance(spec["ros_topic"], list) else [spec["ros_topic"]]
         save_prefixes = spec["save_prefix"] if isinstance(spec["save_prefix"], list) else [spec["save_prefix"]]
-        import pdb; pdb.set_trace()
         # One output directory (chunk0) for this local session
-        child_dt = "chunk0"
-        out_dir = set_frodo_dir(save_root_dir, parent_dt, robot, child_dt, 0)
+        out_dir = set_dataset_dir(save_root_dir, cfg, local_bags)
         Path(out_dir).mkdir(parents=True, exist_ok=True)
-
-        # Skip non-image groups here; images handled via process_rgb only
-        if not any(t.endswith(("Image", "CompressedImage", "CameraInfo")) for t in ros_topics):
-            continue
 
         # Run RGB processor
         art = process_rgb(
-            bags=local_paths,
+            bags=local_bags,
             out_dir=str(out_dir),
             topics=ros_topics,
             save_prefixes=save_prefixes,
             seq=robot,
-            fps=15,
-            process_bag=True
+            fps=10,
+            process_bag=True,
+            save_video=cfg.get('save_video', True)
         )
+
         if not art:
             logging.warning(f"[local] No frames found for {ros_topics} in {sess_dir}")
             continue
-
+        
         # Write odometry if available; else blank path
         odom_path = ""
         if odom_df is not None and not odom_df.empty:
@@ -209,7 +215,7 @@ def inspect_and_stream_local(
         if static_transforms:
             tf_path = Path(out_dir) / f"{topics_dict[tf_static_key]['save_prefix']}_{robot}.yaml" if tf_static_key else (Path(out_dir) / "tf_static_local.yaml")
             with Path(tf_path).open("w") as f:
-                _transforms_to_yaml(static_transforms, f)
+                transforms_to_yaml(static_transforms, f)
             tf_path = str(tf_path)
 
         # Assume first image topic is the main video
@@ -218,7 +224,6 @@ def inspect_and_stream_local(
 
         metadata_rows.append(
             {
-                "child_dt": child_dt,
                 "video":    main_video,
                 "odometry": odom_path,
                 "controls": ctrl_path,
