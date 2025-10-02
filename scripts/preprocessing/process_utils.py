@@ -187,6 +187,7 @@ def inspect_and_stream_local(
             topics=ros_topics,
             save_prefixes=save_prefixes,
             seq=robot,
+            write_archival=False
             fps=10,
             process_bag=True,
             save_video=cfg.get('save_video', True)

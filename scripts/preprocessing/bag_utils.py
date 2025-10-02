@@ -262,43 +262,27 @@ def _estimate_fps(timestamps: List[float], default_fps: float) -> float:
         fps = float(np.clip(np.mean([fps_span, fps_mean]), 0.1, 300.0))
     return float(np.clip(fps, 0.1, 300.0))
 
-def _open_mp4_preview_writer(path, fps_used, quality=18):
+def _open_mp4_writer(path, fps_used, crf=18, preset="veryfast"):
     """
-    Cross-platform MP4: libx264 + yuv420p + pad filter
-    → opens in default players everywhere and browsers.
+    Cross-platform MP4 writer (libx264 + yuv420p) with auto-padding to even dims.
     """
     return get_writer(
         str(path), fps=float(fps_used),
         codec="libx264",
         pixelformat="yuv420p",
         ffmpeg_params=[
-            # Auto-pad to even dims without changing content
+            # keep original resolution; pad to even if needed for yuv420p
             "-vf", "pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2:x=0:y=0",
-            "-crf", str(quality),
-            "-preset", "veryfast",
+            "-crf", str(crf),
+            "-preset", preset,         # "veryfast" for lossy, "slow"/"medium" for near-lossless if you want
             "-profile:v", "high",
             "-level", "4.2",
-            "-movflags", "+faststart"
+            "-movflags", "+faststart",
         ],
-        # Prevent ImageIO from resizing to macroblock multiples
+        # prevent imageio from forcing macroblock multiples
         macro_block_size=1,
     )
 
-def _open_mkv_archival_writer(path, fps_used, crf=10):
-    """
-    Archival: MKV + libx264rgb keeps RGB (no chroma subsampling).
-    Bit-accurate colors; opens in VLC/ffplay/etc.
-    """
-    return get_writer(
-        str(path), fps=float(fps_used),
-        codec="libx264rgb",
-        pixelformat="rgb24",
-        ffmpeg_params=[
-            "-crf", str(crf),
-            "-preset", "slow",
-        ],
-        macro_block_size=1,
-    )
 
 def process_rgb(
     bags: List[str],
@@ -309,34 +293,30 @@ def process_rgb(
     fps: int = 10,
     process_bag: bool = True,
     save_video: bool = True,
-    write_archival: bool = True,     # write MKV RGB master alongside MP4
-    mp4_crf: int = 18,               # quality for lossy MP4 (lower = better)
-    mkv_crf: int = 10,               # quality for archival MKV (near-lossless)
+    crf_lossy: int = 20,        # smaller
+    crf_near: int  = 10,        # near-lossless but still yuv420p (very compatible)
+    near_preset: str = "slow",  # you can pick "medium" for speed/size tradeoff
 ) -> Dict[str, str]:
     """
     Writes per topic:
-      • <prefix>.mp4        (H.264 yuv420p, cross-platform)
-      • <prefix>_arch.mkv   (x264rgb RGB archival, optional)
+      • <prefix>.mp4              (H.264 yuv420p, CRF=crf_lossy)
+      • <prefix>_near.mp4         (H.264 yuv420p, CRF=crf_near, high quality)
       • <prefix>_timestamps_<seq>.csv
     """
     out_dir = Path(out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # per-topic state
-    artefacts    = {t: {}   for t in topics}
-    writers_mp4  = {t: None for t in topics}
-    writers_arch = {t: None for t in topics} if write_archival else {t: None for t in topics}
-    cam_ts       = {t: []   for t in topics}
-    infos        = {t: {"timestamps": [], "camera_info": []} for t in topics}
+    artefacts          = {t: {}   for t in topics}
+    writers_lossy      = {t: None for t in topics}
+    writers_near       = {t: None for t in topics}
+    cam_ts             = {t: []   for t in topics}
+    infos              = {t: {"timestamps": [], "camera_info": []} for t in topics}
+    prefix_map         = {t: save_prefixes[i] for i, t in enumerate(topics)}
 
-    # map topic -> save_prefix once
-    prefix_map = {t: save_prefixes[i] for i, t in enumerate(topics)}
-
-    # Pre-pass: FPS per topic (cheap; no decoding)
-    ts_map   = _collect_timestamps_per_topic(bags, topics)
+    # Pre-pass FPS
+    ts_map    = _collect_timestamps_per_topic(bags, topics)
     topic_fps = {t: _estimate_fps(ts_map.get(t, []), fps) for t in topics}
 
-    # Main pass
     for bag in bags:
         with AnyReader([Path(bag)]) as reader:
             conns = {c.topic: c for c in reader.connections if c.topic in topics}
@@ -348,7 +328,7 @@ def process_rgb(
                 topic = conn_to_topic[conn]
                 msg   = reader.deserialize(raw, conn.msgtype)
 
-                # timestamp (prefer header; fallback to iterator ns)
+                # timestamp (prefer header)
                 ts = bag_ts * 1e-9
                 h  = getattr(msg, "header", None)
                 if h is not None and getattr(h, "stamp", None) is not None:
@@ -358,7 +338,7 @@ def process_rgb(
                     elif hasattr(st, "secs") and hasattr(st, "nsecs"):
                         ts = st.secs + st.nsecs * 1e-9
 
-                # CameraInfo → save intrinsics; don't count as a frame
+                # CameraInfo
                 if conn.msgtype.endswith("CameraInfo"):
                     intr = {
                         "K": msg.K.tolist(), "D": msg.D.tolist(), "R": msg.R.tolist(),
@@ -394,35 +374,34 @@ def process_rgb(
                 if not process_bag or not save_video:
                     continue
 
-                # Lazily create writers on first frame
-                if writers_mp4[topic] is None:
+                # open writers lazily
+                if writers_lossy[topic] is None:
                     prefix   = prefix_map[topic]
                     fps_used = float(topic_fps.get(topic, fps))
 
-                    mp4_path = out_dir / f"{prefix}.mp4"
-                    writers_mp4[topic] = _open_mp4_preview_writer(mp4_path, fps_used, quality=mp4_crf)
-                    artefacts[topic]["video"] = str(mp4_path)
-                    artefacts[topic]["fps"]   = fps_used
+                    lossy_path = out_dir / f"{prefix}_lossy.mp4"
+                    near_path  = out_dir / f"{prefix}.mp4"
 
-                    if write_archival:
-                        arch_path = out_dir / f"{prefix}_arch.mkv"
-                        writers_arch[topic] = _open_mkv_archival_writer(arch_path, fps_used, crf=mkv_crf)
-                        artefacts[topic]["video_archival"] = str(arch_path)
+                    writers_lossy[topic] = _open_mp4_writer(lossy_path, fps_used, crf=crf_lossy, preset="veryfast")
+                    writers_near[topic]  = _open_mp4_writer(near_path,  fps_used, crf=crf_near,  preset=near_preset)
 
-                # Append frames
-                writers_mp4[topic].append_data(img)
-                if write_archival and writers_arch[topic] is not None:
-                    writers_arch[topic].append_data(img)
+                    artefacts[topic]["video"]        = str(lossy_path)
+                    artefacts[topic]["video_near"]   = str(near_path)
+                    artefacts[topic]["fps"]          = fps_used
 
-    # Finalize + write metadata
+                writers_lossy[topic].append_data(img)
+                writers_near[topic].append_data(img)
+
+    # finalize + metadata
     for topic in topics:
-        if writers_mp4[topic]:
-            writers_mp4[topic].close()
-        if write_archival and writers_arch[topic]:
-            writers_arch[topic].close()
+        if writers_lossy[topic]:
+            writers_lossy[topic].close()
+        if writers_near[topic]:
+            writers_near[topic].close()
 
         prefix   = prefix_map[topic]
         csv_path = out_dir / f"{prefix}_timestamps_{seq}.csv"
+
         if cam_ts[topic]:
             ts_arr = np.asarray(cam_ts[topic], dtype=np.float64)
             pd.DataFrame({"timestamp": ts_arr}).to_csv(csv_path, index=False)
