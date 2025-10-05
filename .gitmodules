@@ -1,0 +1,3 @@
+[submodule "external/pymlg"]
+	path = external/pymlg
+	url = git@github.com:decargroup/pymlg.git

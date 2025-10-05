@@ -4,8 +4,8 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
-from scripts.utils.log_utils import logging
-from scripts.preprocessing.bag_utils import (
+from cotnav.utils.log_utils import logging
+from cotnav.preprocessing.bag_utils import (
     get_ros_type, 
     process_rgb,
     process_odometry,

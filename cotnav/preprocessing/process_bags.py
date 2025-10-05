@@ -6,11 +6,10 @@ from typing import Dict, List
 from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 import pandas as pd
-from scripts.utils.log_utils import logging
-from scripts.utils.loader_utils import construct_filters
 
-from scripts.preprocessing.process_utils import inspect_and_stream_local
-
+from cotnav.utils.log_utils import logging
+from cotnav.utils.loader_utils import construct_filters
+from cotnav.preprocessing.process_utils import inspect_and_stream_local
 from cotnav.dataset.dataset_helpers import get_mission_id
 
 # ------------------ helpers ----------------------------------------------
