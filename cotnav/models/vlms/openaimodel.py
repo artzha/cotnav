@@ -95,6 +95,14 @@ def get_openai_cost(
         price_input_tokens = 1.25
         price_cached_tokens = 0.125
         price_output_tokens = 10.0
+    elif model_name == "gpt-4o":
+        price_input_tokens = 2.50
+        price_cached_tokens = 1.25
+        price_output_tokens = 10.0
+    elif model_name == "gpt-4o-mini":
+        price_input_tokens = 0.15
+        price_cached_tokens = 0.075
+        price_output_tokens = 0.60
     else:
         raise ValueError(f"Model {model_name} pricing not known")
 
@@ -145,7 +153,7 @@ class OpenAIModel:
 
     def preprocess_image(self, img):
         assert isinstance(img, Image.Image), "Only supports preprocess PIL.Image for now" 
-        max_dim = 480
+        max_dim = 320
         w, h = img.size
         largest = max(w, h)
         if largest > max_dim:

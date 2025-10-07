@@ -94,10 +94,115 @@ class PIVOT:
         self,
         image: ImgLike,
         heading_angle: float,
-        # TODO write more args as needed
-    ):
-        """Annotates the image with a goal arrow on the top center that points in the heading angle direction to the goal"""
-        # TODO Implement this.
+        *,
+        center: Optional[Tuple[int, int]] = None,
+        color: Color = (51, 255, 255),
+        thickness: int = 20,
+        style: str = "triangle",          # "triangle" | "line" | "chevron"
+        length_ratio: float = 0.15,       # fraction of image min(W,H) for shaft length
+        head_len_ratio: float = 0.07,     # fraction for arrowhead length
+        head_wid_ratio: float = 0.05,     # fraction for arrowhead width
+        degrees: bool = True,             # if True, heading_angle is in degrees
+        overlay_alpha: float = 0.9        # blend strength over the original image
+    ) -> Image.Image:
+        """
+        Draw a goal-direction arrow near the top of the image.
+
+        Convention (image-centric):
+          - 0° (or 0 rad) points UP (toward smaller v / y).
+          - Positive angles rotate clockwise (to the RIGHT on the image).
+          - Set `degrees=False` if `heading_angle` is already in radians.
+
+        Args:
+            image: PIL.Image | np.ndarray | str/Path (local file). URLs not supported here.
+            heading_angle: heading of goal relative to robot forward.
+            center: (u, v) pixels of the arrow base. Defaults to (W/2, 10%*H).
+            color: (R,G,B)
+            thickness: shaft thickness (pixels)
+            style: "triangle" (default), "line", or "chevron"
+            length_ratio: shaft length relative to min(W,H)
+            head_len_ratio: head length relative to min(W,H)
+            head_wid_ratio: head width relative to min(W,H)
+            degrees: interpret `heading_angle` as degrees if True
+            overlay_alpha: 0..1 for blending drawn overlay
+
+        Returns:
+            PIL.Image.Image with the arrow rendered.
+        """
+        base = self._to_pil(image).convert("RGB")
+        W, H = base.size
+        under = base.copy()
+
+        # Create transparent overlay to draw vector graphics cleanly
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # Default center near top
+        if center is None:
+            c = (int(W * 0.5), int(H * 0.1))
+        else:
+            c = (int(center[0]), int(center[1]))
+
+        # Scale geometry from image size
+        s = float(min(W, H))
+        shaft_len = max(8.0, s * float(length_ratio))
+        head_len  = max(6.0, s * float(head_len_ratio))
+        head_wid  = max(4.0, s * float(head_wid_ratio))
+
+        # Convert heading to radians, image-centric:
+        # 0 -> up, +cw, y points down in image coords.
+        import math
+        ang = math.radians(heading_angle) if degrees else float(heading_angle)
+
+        # Unit vector: 0 => (0,-1) up; +ang rotates clockwise
+        ux = -math.sin(ang)
+        uy = -math.cos(ang)
+
+        # Base and tip of shaft
+        x0, y0 = c
+        x1 = x0 + ux * shaft_len
+        y1 = y0 + uy * shaft_len
+
+        def as_xy(pt):
+            return (int(round(pt[0])), int(round(pt[1])))
+
+        # Draw styles
+        if style.lower() == "line":
+            draw.line([as_xy((x0, y0)), as_xy((x1, y1))], fill=(*color, 255), width=int(thickness))
+
+        elif style.lower() == "chevron":
+            # Shaft
+            draw.line([as_xy((x0, y0)), as_xy((x1, y1))], fill=(*color, 255), width=int(thickness))
+            # Two small fletches at tip
+            # Perp vector
+            px, py = -uy, ux
+            f = head_len * 0.6
+            tip = (x1, y1)
+            left  = (x1 - ux * f + px * (head_wid * 0.6), y1 - uy * f + py * (head_wid * 0.6))
+            right = (x1 - ux * f - px * (head_wid * 0.6), y1 - uy * f - py * (head_wid * 0.6))
+            draw.line([as_xy(tip), as_xy(left)],  fill=(*color, 255), width=int(max(2, thickness - 2)))
+            draw.line([as_xy(tip), as_xy(right)], fill=(*color, 255), width=int(max(2, thickness - 2)))
+
+        else:  # "triangle" (default) — filled triangular arrowhead + shaft
+            # Shaft: stop a bit before the tip to tuck under the head
+            shaft_end = (x1 - ux * (head_len * 0.6), y1 - uy * (head_len * 0.6))
+            draw.line([as_xy((x0, y0)), as_xy(shaft_end)], fill=(*color, 255), width=int(thickness))
+
+            # Triangle head at the tip
+            # Perp vector for width
+            px, py = -uy, ux
+            tip    = (x1, y1)
+            base_c = (x1 - ux * head_len, y1 - uy * head_len)
+            left   = (base_c[0] + px * (head_wid * 0.5), base_c[1] + py * (head_wid * 0.5))
+            right  = (base_c[0] - px * (head_wid * 0.5), base_c[1] - py * (head_wid * 0.5))
+
+            draw.polygon([as_xy(tip), as_xy(left), as_xy(right)], fill=(*color, 255))
+        # Composite overlay
+        comp = Image.alpha_composite(under.convert("RGBA"), overlay)
+        if 0.0 < overlay_alpha < 1.0:
+            comp = Image.blend(under.convert("RGBA"), comp, overlay_alpha)
+
+        return comp.convert("RGB")
 
     def annotate_constant_curvature(
         self,
