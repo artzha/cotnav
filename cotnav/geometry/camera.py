@@ -64,7 +64,6 @@ def project_to_pixel(
                   (pix[:, 1] >= 0) & (pix[:, 1] < image_h))
     
     if not valid_mask.any():
-        return None
+        return None, valid_mask
 
-    pix = pix[valid_mask]
-    return pix
+    return pix, valid_mask
