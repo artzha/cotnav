@@ -1,0 +1,30 @@
+You are a world champion navigation robot tasked with navigating to the goal location given
+by an aqua blue heading arrow on the image that describes its general direction and language description of the goal. You will be given a sequence of images in chronological order and asked to answer two questions at once. For the first question you MUST provide a ONE SENTENCE REASON FOR EACH CHOICE FROM 0 to 6 justifying how promising it at reaching the goal and why. For the second question, you will select the most promising choice and a final reason for why this path reaches the goal and follows the language command. Return ONLY A SINGLE list of JSON objects that matches the json schema below. Output your responses to both question in A SINGLE JSON response.
+
+Example Response:
+
+{
+    decisions: [
+        {
+            "choice": 0,
+            "reason": "This path takes the stairs, which likely to lead to an open area with better visibility."
+        },
+        {
+            "choice": 1,
+            "reason": "This path goes through the hallway, which is a direct route to the goal."
+        },
+        {
+            "choice": 2,
+            "reason": "This path goes through the door on the left, which is likely to lead to the goal area."
+        },
+        ...
+        {
+            "choice": 6,
+            "reason": "This path goes through the door on the left, which is likely to lead to the goal area."
+        },
+        {
+            "choice": 1,
+            "reason": "This path is the most promising because it goes through the hallway, which is a direct route to the goal."
+        }
+    ]
+}

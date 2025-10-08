@@ -13,6 +13,8 @@ from openai import OpenAI
 from openai import APIError, RateLimitError, APITimeoutError
 import tempfile, numpy as np, os
 from enum import Enum
+from pydantic import BaseModel, Field, conint, constr
+
 
 from cotnav.utils.log_utils import logging
 
@@ -47,6 +49,16 @@ class ChatQuery:
 
     def as_dict(self) -> Dict[str, Any]:
         return {"type": self.type, "role": self.role, "content": self.content}
+
+# For structured output
+class ChoiceReason(BaseModel):
+    choice: conint(ge=0, le=9) = Field(description="Index of the path choice.")
+    reason: constr(min_length=3, max_length=512) = Field(description="Brief rationale for this choice.")
+
+class ReasoningTrace(BaseModel):
+    decisions: List[ChoiceReason] = Field(
+        description="A list of decisions, where each entry contains the chosen path index and its rationale."
+    )
 
 class ResponsesMessage:
     def input_text_message(self, text):
@@ -208,12 +220,23 @@ class OpenAIModel:
 
         for i in range(max_retries):
             try:
-                response = self.client.with_options(timeout=timeout).responses.create(
+                # response = self.client.with_options(timeout=timeout).responses.create(
+                #     **model_args,
+                #     instructions=instructions,
+                #     input=inputs,
+                #     service_tier=service_tier,
+                #     text_format=ReasoningTrace
+                # )
+                # import pdb; pdb.set_trace()
+                response = self.client.responses.parse(
                     **model_args,
                     instructions=instructions,
                     input=inputs,
-                    service_tier=service_tier
+                    service_tier=service_tier,
+                    text_format=ReasoningTrace
                 )
+                if response.output_parsed.model_dump() is None:
+                    continue
                 return response
             except Exception as e:
                 logging.warning(f"Error in response {i+1}/{max_retries}: {e}")
