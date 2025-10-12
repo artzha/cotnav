@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Unio
 import os, time, random
 
 import io
+import json
 import PIL
 from PIL import Image
 from pathlib import Path
@@ -265,6 +266,112 @@ class OpenAIModel:
         except Exception as exc:
             # Keep failures non-fatal so cleanup never blocks inference flows.
             print(f"[openai] failed to delete file {file_id}: {exc}")
+
+    def generate_batch_response(
+        self, 
+        instructions: str, inputs: List[str], **kwargs: Any) -> Dict[str, Any]:
+        """
+        Process multiple requests using OpenAI's Batch API.
+        Per-call overrides:
+          - endpoint: API endpoint for batch processing
+          - completion_window: Batch completion window
+          - metadata: Optional metadata for the batch
+          - poll_interval: Seconds between status checks
+          - model_args: Default model arguments to merge with request bodies
+          - timeout, service_tier: Inherited from instance defaults
+        
+        Args:
+            requests: List of request dicts with 'custom_id' and 'body' keys
+            
+        Returns:
+            List of response dicts with results
+        """
+        # Extract parameters with defaults similar to generate_response
+        model_args = kwargs.pop("model_args", self.default_model_args)
+        endpoint = kwargs.pop("endpoint", "/v1/responses")
+        completion_window = kwargs.pop("completion_window", "24h")
+        metadata = kwargs.pop("metadata", None)
+        poll_interval = float(kwargs.pop("poll_interval", 30.0))
+        
+        # Create batch input file
+        batch_input_lines = []
+        requests = []
+        for inp in inputs:
+            requests.append({
+                "custom_id": str(random.randint(100000, 999999)),
+                "method": "POST",
+                "url": endpoint,
+                "body": {
+                    "instructions": instructions,
+                    "input": inp,
+                    **model_args
+                }
+            })
+
+        for req in requests:
+            batch_input_lines.append(json.dumps(req))
+        
+        batch_content = "\n".join(batch_input_lines)
+        print(batch_content)
+        
+        # Upload input file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+            f.write(batch_content)
+            f.flush()
+            temp_file_name = f.name
+            
+        with open(temp_file_name, 'rb') as upload_file:
+            input_file = self.client.files.create(
+                file=upload_file,
+                purpose="batch"
+            )
+        
+        os.unlink(temp_file_name)
+        
+        # Create batch
+        batch_kwargs = {
+            "input_file_id": input_file.id,
+            "endpoint": endpoint,
+            "completion_window": completion_window
+        }
+        if metadata:
+            batch_kwargs["metadata"] = metadata
+            
+        batch = self.client.batches.create(**batch_kwargs)
+        
+        # Poll for completion
+        while batch.status in ["validating", "in_progress", "finalizing"]:
+            time.sleep(poll_interval)
+            batch = self.client.batches.retrieve(batch.id)
+            
+        if batch.status != "completed":
+            if hasattr(batch, 'error_file_id') and batch.error_file_id:
+                try:
+                    error_content = self.client.files.content(batch.error_file_id)
+                    print(f"Batch failed. Error details:\n{error_content.text}")
+                except Exception:
+                    pass
+            raise RuntimeError(f"Batch failed with status: {batch.status}")
+            
+        if not batch.output_file_id:
+            raise RuntimeError(f"Batch completed but no output file available")
+            
+        # Download results
+        output_content = self.client.files.content(batch.output_file_id)
+        output_lines = output_content.text.strip().split('\n')
+        
+        results = []
+        for line in output_lines:
+            if line.strip():
+                result = json.loads(line)
+                results.append(result)
+                
+        # Cleanup files
+        self.delete_file(input_file.id)
+        if batch.output_file_id:
+            self.delete_file(batch.output_file_id)
+        
+        return results
 
 def _img_to_buf(img):
     if isinstance(img, np.ndarray):

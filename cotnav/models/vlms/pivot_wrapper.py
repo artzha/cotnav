@@ -89,6 +89,16 @@ class PIVOT:
             **call_kwargs
         )
         return response
+    
+    def batch_vqa(self, system_prompt: str, batch_prompts: Iterable[ChatThread], **call_kwargs: Any) -> List[PivotVQAResult]:
+        """Upload the image and run a batch of VLM calls with the provided questions."""  
+        batch_inputs = [self.vlm.compile_prompt(prompts) for prompts in batch_prompts]
+        responses = self.vlm.generate_batch_response(
+            system_prompt,
+            batch_inputs,
+            **call_kwargs
+        )
+        return responses
 
     def annotate_goal_heading(
         self,

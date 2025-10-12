@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.distance import cdist
-
+import json
+from typing import Any, Dict, List
 
 
 def sample_arc_xy(arc, max_len_m: float, samples_per_meter: int = 10) -> np.ndarray:
@@ -71,3 +72,91 @@ def gt_local_polyline_from_odom_corrected(
     cutoff_idx = max(1, min(cutoff_idx, len(future_segment)-1))
     
     return future_segment[:cutoff_idx+1]  # (K,2)
+
+def convert_response_to_unified_format(
+    response_json: Any,
+    dataset: str,
+    mission: str,
+    start_frame: int,
+    end_frame: int,
+    conditional_enabled: bool,
+) -> Dict[str, Any]:
+    """Convert VLM output(s) to the unified format."""
+
+    # --- small coercers ---
+    def coerce(obj: Any) -> Any:
+        if isinstance(obj, str) and '{' in obj:
+            json_start = obj.find('{')
+            obj = obj[json_start:]  # remove the ```json ```
+
+        # remove the ```json ```
+        if isinstance(obj, str):
+            obj = obj.replace("```json", "").replace("```", "").strip()
+        # pydantic -> dict
+        try:
+            from pydantic import BaseModel  # type: ignore
+            if isinstance(obj, BaseModel):
+                return obj.model_dump()
+        except Exception:
+            pass
+        # str -> json
+        if isinstance(obj, str):
+            try:
+                return json.loads(obj)
+            except Exception:
+                print(obj)
+                return obj
+        return obj
+
+    def as_decisions(x: Any) -> List[Dict[str, Any]]:
+        x = coerce(x)
+        if isinstance(x, dict) and "decisions" in x:
+            return list(coerce(x["decisions"]))
+        if isinstance(x, list):
+            return list(x)
+        raise ValueError("Expected a list or a dict with key 'decisions'.")
+
+    def to_choice_reason(d: Any) -> Dict[str, Any]:
+        d = coerce(d) or {}
+        # print("D" , d)
+        # accept {choice, reason} or {final_choice, final_reason}
+        choice = d.get("choice", d.get("final_choice", None))
+        reason = d.get("reason", d.get("final_reason", ""))
+        # normalize choice to int when possible
+        try:
+            choice = int(choice)
+        except Exception:
+            pass
+        return {"choice": choice, "reason": str(reason)}
+
+    data = coerce(response_json)
+
+    out = {
+        "dataset": dataset,
+        "mission": mission,
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "intermediate_responses": [],
+        "final_response": {"stage": 0, "choice": None, "reason": ""},
+    }
+
+    if conditional_enabled:
+        # Expect [decisions_stage0, final_dict]
+        if not (isinstance(data, list) and len(data) >= 2):
+            raise ValueError("Conditional mode expects [decisions_list, final_dict].")
+        stage0 = as_decisions(data[0])
+        final_dict = to_choice_reason(as_decisions(data[-1])[0])
+        out["intermediate_responses"] = [
+            {"stage": 0, **to_choice_reason(d)} for d in stage0
+        ]
+        out["final_response"] = {"stage": 0, **final_dict}
+    else:
+        # Expect a single list (or dict with 'decisions'); last element is final
+        decs = [to_choice_reason(d) for d in as_decisions(data[0])]
+        if not decs:
+            raise ValueError("Non-conditional mode requires a non-empty decisions list.")
+        inter, final = decs[:-1], decs[-1]
+        out["intermediate_responses"] = [{"stage": 0, **d} for d in inter]
+        out["final_response"] = {"stage": 0, **final}
+
+    return out

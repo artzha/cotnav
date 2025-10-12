@@ -176,3 +176,48 @@ def transform_poses(
     q_xyzw_newworld = R.from_matrix(Rt_newworld).as_quat() # (N,4) xyzw
     q_wxyz_newworld = q_xyzw_newworld[:, [3, 0, 1, 2]]     # back to wxyz
     return np.column_stack([odom_ts, xyz_newworld, q_wxyz_newworld])  # (N,8)
+
+def get_T_base_local(odom: np.ndarray, calib, cam_ts, tm, start_frame, end_frame) -> np.ndarray:
+    interp_odom = interpolate_se3(cam_ts, odom[:, 0], odom[:, 1:4], odom[:, 4:8])
+
+    print("Loaded odometry with shape:", odom.shape)
+    print("Loaded timestamps with shape:", cam_ts.shape)
+    print("Interpolated odometry shape:", interp_odom.shape)
+
+    print("Image shape (H, W):", calib.size_hw)
+    print("Intrinsics:\n", calib.K)
+    print("TF world to cam:\n", calib.T_world_cam)
+
+    odom_window = interp_odom[start_frame:end_frame]
+    T_hesai_odom = se3_matrix(odom_window[:, 1:4], odom_window[:, 4:8])
+    T_base_hesai = tm.get_transform("hesai_lidar", "base") # tgt, src
+    T_base_odom = T_hesai_odom @ T_base_hesai
+    T_base_local = np.linalg.inv(T_base_odom[0]) @ T_base_odom
+    return T_base_local
+
+# Compute goal heading angle
+def heading_from_start(poses: np.ndarray, start_idx: int, goal_idx: int, *, degrees=False) -> float:
+    """
+    Compute signed heading angle from the robot's start pose (4x4 SE3) to the goal.
+    Positive = CCW from robot's +x axis in the start frame.
+    """
+    if poses.shape[1:] != (4, 4):
+        raise ValueError(f"poses must be 4x4 SE(3) matrix, found {poses.shape[1:]}")
+
+    goal_xyz = poses[goal_idx, :3, 3].reshape(-1)
+    if goal_xyz.size not in (2,3):
+        raise ValueError("goal_xyz must have 2 or 3 entries (x,y[,z])")
+    T_start = poses[start_idx]
+
+    # Start pose world position & yaw
+    x0, y0 = T_start[0,3], T_start[1,3]
+    R_start = T_start[:3,:3]
+    yaw0 = R.from_matrix(R_start).as_euler("zyx", degrees=False)[0]
+
+    # World bearing to goal
+    gx, gy = goal_xyz[0], goal_xyz[1]
+    bearing_world = np.arctan2(gy - y0, gx - x0)
+
+    # Relative heading = bearing - start_yaw
+    heading = (bearing_world - yaw0 + np.pi) % (2*np.pi) - np.pi
+    return np.degrees(heading) if degrees else heading
