@@ -23,3 +23,6 @@ dev = ["pytest", "black", "ruff", "pre-commit"]
 where   = ["."]
 include = ["cotnav*", "scripts*"]
 exclude = []
+
+[project.scripts]
+cotnav-eval = "cotnav.eval.cli:main"
