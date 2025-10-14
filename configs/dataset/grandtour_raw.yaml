@@ -1,0 +1,37 @@
+root_dir: './data/grandtour_raw'
+subdirs:
+  - name: 'split_dir'
+    path: 'turn_splits'
+
+
+# Global configs
+num_views: &num_views 5
+output_range: &output_range [0, 1.0]
+
+fload_keys: ['sequence', 'start_frame', 'front_rgb', 'odom']
+load_cfgs:
+  - name: 'sequence'
+    type: 'scalar'
+    dtype: 'long'
+  - name: 'start_frame'
+    type: 'scalar'
+    dtype: 'long'
+  - name: 'front_rgb'
+    type: 'image'
+    kwargs:
+      camid: 'front_camera'
+      dtype: 'float'
+      dimensions: [3, 270, 360]
+      num_views: *num_views
+      filename: 'front_camera_lossy.mp4'
+      range: *output_range
+  - name: 'odom'
+    type: 'dict'
+    kwargs:
+      subkeys:
+        - name: 'raw_poses'
+          dtype: 'float'
+          ts_filename: 'front_camera_timestamps_anymal.csv'
+          odom_filename: 'odometry_data_anymal.csv'
+          tf_filename: 'tf_static_anymal.yaml'
+          converter_fn: 'convert_grandtour_odom'

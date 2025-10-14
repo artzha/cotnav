@@ -1,0 +1,52 @@
+defaults:
+  - metric: core
+  - _self_
+
+seed: 123
+limit: null
+out_dir: outputs/eval/${now:%Y%m%d}-${model.name}-${task.name}
+
+dataset:
+  class_path: "cotnav.dataset.grandtour_dataset:GrandTourDataset"   # ← your current class
+  kwargs:
+    root: data/grandtour_raw
+    split: val
+  name: grandtour
+
+task:
+  class_path: "cotnav.core.tasks:NavGoalTask"
+  kwargs:
+    max_steps: 500
+    use_bc_adapter: true
+  name: nav_goal
+
+model:
+  class_path: "cotnav.models.vlms.pivot_wrapper:PIVOT"       # ← existing model class
+  kwargs:
+    vlm:
+      name: openai
+      provider_kwargs:
+        model: gpt-4o-mini
+        timeout: 90.0
+        api_key: ""
+        service_tier: "batch"
+        default_model_args: ""
+        generate_defaults:
+          instructions: "Answer concisely and focus on drivable-space cues."
+    motion_parameters:
+      max_curvature: 0.6,
+      max_fee_path_length: 3.0,
+      num_options: 7
+      colors: 
+        - [255, 0, 0]
+        - [255, 255, 255]
+        - [0, 255, 0]
+      thickness: 3
+      endpoint_radius: 4
+      alpha: 230
+  name: pivot_wrapper
+
+metrics:
+  class_paths:
+    - "cotnav.utils.metrics:hausdorff"
+    - "cotnav.utils.metrics:accuracy"

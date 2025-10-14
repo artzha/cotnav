@@ -317,10 +317,12 @@ class GenericNavDataset(Dataset):
             tf_path = Path(self.root_dir) / infos['mission_id'] / subkey_cfg.get('tf_filename', '')
             if ts_path.exists() and tf_path.exists():
                 # Align odom to video timestamps if available
+                convert_fn = subkey_cfg['converter_fn']
                 ref_ts = load_timestamps(ts_path)[start_frame:end_frame+1]
                 interp_odom = interpolate_se3(ref_ts, odom_np[:, 0], odom_np[:, 1:4], odom_np[:, 4:8])
                 tm = build_transforms(tf_path)
-                T_base_local = dh.convert_grandtour_odom(interp_odom, ref_ts, tm)
+                # Call convert_fn from dataset_helpers
+                T_base_local = getattr(dh, convert_fn)(interp_odom, ts_path, tm)
             else:
                 T_base_odom = se3_matrix(
                     odom_np[start_frame:end_frame+1, 1:4], 
