@@ -1,0 +1,9 @@
+{
+    "system_prompt": {
+        "path": "cotnav/models/prompts/conditional_prompt.txt"
+    },
+    "intermediate_prompts": [
+        "For each path option from 0 to 6, describe how promising of an option it is for {LANGUAGE_CMD} and provide each reason for each choice in a list of json objects. ONLY output the result in the format as described in the system prompt.",
+        "Given the previous reasons explaining each path option, select the best overall choice that follows the {LANGUAGE_CMD} and its reason in a json format. ONLY output the result in the format as described in the system prompt."
+    ]
+}

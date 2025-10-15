@@ -5,6 +5,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Iterable, Optional
 
+import json
 import yaml
 from PIL import Image
 from decord import VideoReader, cpu, bridge as decord_bridge
@@ -15,7 +16,7 @@ from torchvision.transforms import ToTensor
 
 import pandas as pd
 
-from cotnav.utils.loader_utils import (load_timestamps, load_odom, build_transforms)
+from cotnav.utils.loader_utils import (load_timestamps, load_odom, build_transforms, load_intrinsics)
 from cotnav.utils.math_utils import (interpolate_se3, se3_matrix)
 
 from cotnav.dataset import dataset_helpers as dh
@@ -241,9 +242,9 @@ class GenericNavDataset(Dataset):
         """
         toks = parse_sample_id(sample_id)
         dataset, mission_id, start_frame, end_frame = toks["dataset"], toks["mission_id"], toks["start_frame"], toks["end_frame"]
-
-        # Example: assemble sequence dir (replace with your helper if you have one)
         seq_dir = Path(self.root_dir) / mission_id
+
+        # Load calibrations if available
 
         return {
             "sequence": f"{dataset} {mission_id} {start_frame} {end_frame}",
@@ -265,6 +266,20 @@ class GenericNavDataset(Dataset):
         return out
 
     # ---------- template loaders you can fill in ----------
+
+    def _load_calib(self, infos: Dict[str, Any], key_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Required cfg:
+          kwargs.intr_filename, kwargs.tf_filename
+        """
+        intr_path = Path(self.root_dir) / infos['mission_id'] / key_cfg['kwargs']['intr_filename']
+        tf_path = Path(self.root_dir) / infos['mission_id'] / key_cfg['kwargs']['tf_filename']
+        assert intr_path.exists(), f"Missing intrinsics file: {intr_path}"
+        assert tf_path.exists(), f"Missing tf file: {tf_path}"
+        world_frame = key_cfg['kwargs'].get('world_frame', 'base')
+
+        calib = load_intrinsics(intr_path, tf_path, world_frame)
+        return calib
 
     def _load_image(self, infos: Dict[str, Any], key_cfg: Dict[str, Any]) -> torch.Tensor:
         """
@@ -299,44 +314,64 @@ class GenericNavDataset(Dataset):
         TEMPLATE: fill with your se(2)/se(3) conversion.
         Required: kwargs.dimensions, kwargs.dtype, kwargs.horizon, kwargs.skip_factor
         """
-        # dims = key_cfg["kwargs"]["dimensions"]
-        # dtype = DTYPE_TO_TORCH[key_cfg["kwargs"]["dtype"]]
+        ts_path = Path(self.root_dir) / infos['mission_id'] / key_cfg['kwargs']['ts_filename']
+        tf_path = Path(self.root_dir) / infos['mission_id'] / key_cfg['kwargs']['tf_filename']
+        odom_path = Path(self.root_dir) / infos['mission_id'] / key_cfg['kwargs']['odom_filename']
+        assert all([p.exists() for p in [ts_path, tf_path, odom_path]]), "Missing odom/ts/tf files"
+        odom_np = load_odom(odom_path)
+        tm = build_transforms(tf_path)
 
         out_dict = {}
         subkeys = key_cfg['kwargs'].get('subkeys', [])
         for subkey_cfg in subkeys:
             name = subkey_cfg['name']
             dtype = DTYPE_TO_TORCH[subkey_cfg['dtype']]
-            odom_path = Path(self.root_dir) / infos['mission_id'] / subkey_cfg['odom_filename']
-            
-            assert odom_path.exists(), f"Missing {odom_path}" 
-            start_frame, end_frame = int(infos['start_frame']), int(infos['end_frame'])
+            convert_fn = subkey_cfg['converter_fn']
+            start_frame, end_frame = None, None
 
-            odom_np = load_odom(odom_path)
-            ts_path = Path(self.root_dir) / infos['mission_id'] / subkey_cfg.get('ts_filename', '')
-            tf_path = Path(self.root_dir) / infos['mission_id'] / subkey_cfg.get('tf_filename', '')
-            if ts_path.exists() and tf_path.exists():
-                # Align odom to video timestamps if available
-                convert_fn = subkey_cfg['converter_fn']
-                ref_ts = load_timestamps(ts_path)[start_frame:end_frame+1]
-                interp_odom = interpolate_se3(ref_ts, odom_np[:, 0], odom_np[:, 1:4], odom_np[:, 4:8])
-                tm = build_transforms(tf_path)
-                # Call convert_fn from dataset_helpers
-                T_base_local = getattr(dh, convert_fn)(interp_odom, ts_path, tm)
+            if name == 'action_ctx':
+                start_frame, end_frame = int(infos['start_frame']), int(infos['end_frame'])
+            elif name == 'action_label':
+                start_frame = int(infos['start_frame']) + 1
+                end_frame = start_frame + subkey_cfg['horizon']
             else:
-                T_base_odom = se3_matrix(
-                    odom_np[start_frame:end_frame+1, 1:4], 
-                    odom_np[start_frame:end_frame+1, 4:8]
-                )
-                T_base_local = np.linalg.inv(T_base_odom[0]) @ T_base_odom
+                raise NotImplementedError(f"Unknown odom subkey '{name}'")
+
+            # Align odom to video timestamps if available
+            ref_ts = load_timestamps(ts_path)[start_frame:end_frame+1]
+            interp_odom = interpolate_se3(ref_ts, odom_np[:, 0], odom_np[:, 1:4], odom_np[:, 4:8])
+            T_base_local = getattr(dh, convert_fn)(interp_odom, ts_path, tm)
+
+            # Pad or truncate to fixed length if needed
+            num_actions = subkey_cfg.get('num_actions', None)
+            if num_actions is not None:
+                T_base_local = dh.pad_or_trunc_last(T_base_local, num_actions)
+
             out_dict[name] = torch.from_numpy(T_base_local).to(dtype)  # (T,4,4)
 
-        return T_base_local.astype(np.float32)
+        return out_dict
 
+    def _load_prompt(self, infos: Dict[str, Any], key_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        TEMPLATE: load text prompt from a JSON file.
+        Required cfg:
+          kwargs.prompts: path to JSON file with structure {"0": "prompt text", ...}
+        """
+        # Start prompts from project directory
+        prompts_path = Path("./") / key_cfg['kwargs']['prompts']
+        assert prompts_path.exists(), f"Prompts file not found: {prompts_path}"
 
-    # ----- META BLOCK TEMPLATES (plug your logic like in your Frodo code) -----
+        with open(prompts_path, 'r') as f:
+            prompts_dict = json.load(f)
 
-    # ---------- collate (same pattern as yours) ----------
+        # TODO: Preprocess Language Command
+        for key, prompt_dict in prompts_dict.items():
+            if key == 'system_prompt':
+                system_prompt = open(prompt_dict['path'], 'r').read().strip()
+                prompts_dict[key] = system_prompt
+            else:
+                prompts_dict[key] = tuple(prompt_dict)
+        return prompts_dict
 
     @staticmethod
     def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:

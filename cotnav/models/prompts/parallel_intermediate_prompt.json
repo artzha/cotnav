@@ -1,0 +1,8 @@
+{
+    "system_prompt": {
+        "path": "cotnav/models/prompts/parallel_prompt.txt"
+    },
+    "prompts": [
+        "For each path option from 0 to 6, describe how promising of an option it is for {LANGUAGE_CMD} and provide each reason for each choice in a list of json objects. After describing each path option, then append one more choice in the list of json objects for best path option and the reason. ONLY output the result in the format as described in the system prompt."
+    ]
+}

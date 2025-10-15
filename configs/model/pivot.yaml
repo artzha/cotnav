@@ -1,0 +1,44 @@
+# Which wrapper to run (no training args here)
+vlm:
+  name: "openai"
+  provider_kwargs:
+    model: "gpt-4o-mini"
+    timeout: 90.0
+    service_tier: "standard"
+    default_model_args:
+      tools:
+        - type: code_interpreter
+          container:
+            type: auto
+motion_parameters:
+  max_curvature: 0.6
+  max_free_path_length: 3.0
+  num_options: 7
+  pixels_per_meter: 120.0
+  colors:
+    - [255, 0, 0]
+    - [255, 255, 255]
+    - [0, 255, 0]
+  thickness: 3
+  endpoint_radius: 4
+  alpha: 230
+
+annotation:
+  thickness: 5
+  endpoint_radius: 25
+  overlay_alpha: 0.9
+  label_font_size: 40
+  label_font_color: [0, 0, 0]
+
+# Map dataset keys → model keys (your convention)
+model_inputs:
+- in_key: "front_rgb"     # dataset
+  out_key: "rgb_image"    # model
+- in_key: "goal_caption"
+  out_key: "goal_command"
+- in_key: "system_prompt"
+  out_key: "system_prompt"
+- in_key: "intermediate_prompts"
+  out_key: "intermediate_prompts"
+# - in_key: "action_label"
+#   out_key: "action_label"

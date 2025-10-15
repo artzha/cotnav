@@ -3,12 +3,12 @@ subdirs:
   - name: 'split_dir'
     path: 'turn_splits'
 
-
 # Global configs
 num_views: &num_views 5
+max_actions: &max_actions 100
 output_range: &output_range [0, 1.0]
 
-fload_keys: ['sequence', 'start_frame', 'front_rgb', 'odom']
+fload_keys: ['sequence', 'start_frame', 'calib', 'front_rgb', 'odom', 'prompt']
 load_cfgs:
   - name: 'sequence'
     type: 'scalar'
@@ -16,6 +16,12 @@ load_cfgs:
   - name: 'start_frame'
     type: 'scalar'
     dtype: 'long'
+  - name: 'calib'
+    type: 'dict'
+    kwargs:
+      intr_filename: 'front_camera_info_anymal.yaml'
+      tf_filename: 'tf_static_anymal.yaml'
+      world_frame: 'base'
   - name: 'front_rgb'
     type: 'image'
     kwargs:
@@ -28,10 +34,20 @@ load_cfgs:
   - name: 'odom'
     type: 'dict'
     kwargs:
+      ts_filename: 'front_camera_timestamps_anymal.csv'
+      odom_filename: 'odometry_data_anymal.csv'
+      tf_filename: 'tf_static_anymal.yaml'
       subkeys:
-        - name: 'raw_poses'
+        - name: 'action_ctx'
           dtype: 'float'
-          ts_filename: 'front_camera_timestamps_anymal.csv'
-          odom_filename: 'odometry_data_anymal.csv'
-          tf_filename: 'tf_static_anymal.yaml'
           converter_fn: 'convert_grandtour_odom'
+          num_actions: *max_actions
+        - name: 'action_label'
+          dtype: 'float'
+          horizon: 100 # 10 seconds of future actions
+          converter_fn: 'convert_grandtour_odom'
+          num_actions: *max_actions
+  - name: 'prompt'
+    type: 'dict'
+    kwargs:
+      prompts: 'cotnav/models/prompts/conditional_intermediate_prompt.json'

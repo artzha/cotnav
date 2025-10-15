@@ -16,7 +16,6 @@ import tempfile, numpy as np, os
 from enum import Enum
 from pydantic import BaseModel, Field, conint, constr
 
-
 from cotnav.utils.log_utils import logging
 
 # ----- Types -----

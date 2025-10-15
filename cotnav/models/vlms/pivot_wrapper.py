@@ -50,7 +50,13 @@ def is_send_token(msg: Dict[str, Any]) -> bool:
 class PIVOT:
     """Minimal wrapper that forwards VQA calls to the configured VLM."""
 
-    def __init__(self, *, vlm: Dict[str, Any], motion_parameters: Dict[str, Any]):
+    def __init__(self, *, vlm: Dict[str, Any], motion_parameters: Dict[str, Any], **kwargs) -> None:
+        """
+        Args:
+            vlm: configuration dict for the VLM instance. See _init_vlm().
+            motion_parameters: dict of motion parameter settings for motion templates.
+            annotation: (optional) dict of annotation settings (not used yet).
+        """
         self.vlm = self._init_vlm(vlm)
 
         generate_defaults = dict(vlm.get("generate_defaults", {}))
@@ -79,6 +85,12 @@ class PIVOT:
         return motion_bank.arcs()
 
     # -------------------- Public API --------------------
+
+    def __call__(self, rgb_image: ImgLike, system_prompt: str, intermediate_prompts: List[str]):
+        """Upload the image and run a VLM call with a prompt is given"""
+        # TODO: Construct ChatThread from system_prompt and intermediate_prompts and rgb image context
+        import pdb; pdb.set_trace()
+        pass
 
     def vqa(self, system_prompt: str, prompts: ChatThread, resume: bool = False, **call_kwargs: Any) -> PivotVQAResult:
         """Upload the image and run a single VLM call with the provided question."""  

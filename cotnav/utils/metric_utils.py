@@ -1,6 +1,136 @@
+# metric_manager.py
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Callable
+
 import numpy as np
 from scipy.spatial.distance import cdist
+import torch
+    
+class MetricManager:
+    """
+    Lightweight metric aggregator.
 
+    Each metric config can be one of:
+      - {"fn": "package.module:function_name", "name": "optional_alias", "pred_key": "...", "lab_key": "...", "kwargs": {...}}
+      - {"name": "compute_accuracy", "pred_key": "...", "lab_key": "...", "kwargs": {...}}  # resolved via `registry`
+
+    registry: optional dict[str, Callable] to resolve short names.
+    writer: optional summary writer (must support .add_scalar(tag, scalar_value, global_step=step))
+    """
+
+    def __init__(self,
+                 metrics: List[Dict[str, Any]],
+                 writer: Any = None):
+        self.writer = writer
+        self._cfgs: Dict[str, Dict[str, Any]] = {}
+        self._fns: Dict[str, Callable] = {}
+        self._totals: Dict[str, float] = {}
+        self._counts: Dict[str, int] = {}
+
+        # Optional streaming store for special metrics (e.g., precision/recall curves)
+        self._stream: Dict[str, Dict[str, np.ndarray]] = {}
+
+        # Resolve each metric to a callable
+        for cfg in metrics:
+            # display name
+            disp = cfg.get("name")
+            fn = None
+            # resolve from registry by short name
+            key = cfg["name"]
+            try:
+                fn = globals()[key]
+            except KeyError:
+                raise ValueError(f"Metric '{key}' not found in globals.")
+
+            self._cfgs[disp] = cfg
+            self._fns[disp] = fn
+            self._totals[disp] = 0.0
+            self._counts[disp] = 0
+
+    def reset(self):
+        for k in self._totals:
+            self._totals[k] = 0.0
+            self._counts[k] = 0
+        self._stream.clear()
+
+    def set_writer(self, writer: Any):
+        self.writer = writer
+
+    def update(self,
+               tensor_dict: Dict[str, Any],
+               step: Optional[int] = None,
+               n: int = 1) -> Dict[str, Any]:
+        """
+        Compute all metrics for the current sample (or mini-batch),
+        update running averages, and return the instantaneous values.
+
+        Each metric config may specify:
+          - pred_key: key inside predictions or model_inputs (predictions searched first)
+          - lab_key:  key inside predictions or model_inputs (model_inputs searched second)
+          - kwargs:   extra args to pass to the metric function
+
+        Special-case: if prediction tensor has ndim==5 (B,E,...) → mean over ensemble (dim=1).
+        """
+        out: Dict[str, Any] = {}
+
+        for name, fn in self._fns.items():
+            cfg = self._cfgs[name]
+            kwargs = dict(cfg.get("kwargs", {}) or {})
+
+            # Locate prediction/label tensors by keys (predictions first, then inputs)
+            pred_key = cfg.get("pred_key")
+            lab_key  = cfg.get("lab_key")
+
+            pred = tensor_dict.get(pred_key)
+            lab  = tensor_dict.get(lab_key)
+            assert pred_key is not None and lab_key is not None, f"Metric '{name}' requires 'pred_key' and 'lab_key'."
+
+            # Tensor/numpy harmonization
+            if isinstance(pred, torch.Tensor) and pred.ndim == 5:
+                pred = pred.mean(dim=1)  # average over ensemble E
+            valid_mask = None
+            if isinstance(pred, torch.Tensor) and isinstance(lab, torch.Tensor):
+                valid_mask = torch.isfinite(pred) & torch.isfinite(lab)
+
+            # Try generic call styles:
+            #  (1) fn(pred, lab, valid_mask=..., **kwargs)
+            #  (2) fn(pred, lab, **kwargs)
+            #  (3) fn(predictions, model_inputs, **kwargs)
+            try:
+                if "valid_mask" in fn.__code__.co_varnames:
+                    val = fn(pred, lab, valid_mask=valid_mask, **kwargs)
+                else:
+                    val = fn(pred, lab, **kwargs)
+            except Exception:
+                val = fn(predictions, model_inputs, **kwargs)
+
+            # Convert scalar
+            if isinstance(val, torch.Tensor):
+                val = val.detach().cpu()
+                val = val.item() if val.numel() == 1 else val.mean().item()
+
+            if isinstance(val, np.ndarray) and val.size == 1:
+                val = float(val.reshape(()))
+
+            out[name] = val
+
+            # Update running stats
+            self._totals[name] += float(val) * n
+            self._counts[name] += n
+
+            # Optional writer
+            if self.writer is not None and hasattr(self.writer, "add_scalar"):
+                self.writer.add_scalar(name, float(val), global_step=0 if step is None else step)
+
+        return out
+
+    def averages(self) -> Dict[str, float]:
+        """Return running averages for each metric."""
+        avg = {}
+        for k in self._totals:
+            c = max(1, self._counts[k])
+            avg[k] = self._totals[k] / c
+        return avg
 
 def compute_accuracy(arcs: np.ndarray, probs: np.ndarray, odom: np.ndarray) -> float:
     """
@@ -60,7 +190,6 @@ def hausdorff_xyz(A: np.ndarray, B: np.ndarray, oneway=True) -> float:
         return float(D.min(axis=1).max())
     else:
         return float(max(D.min(axis=1).max(), D.min(axis=0).max()))
-
 
 if __name__ == "__main__":
     print("Testing compute_accuracy with specific probabilities...")

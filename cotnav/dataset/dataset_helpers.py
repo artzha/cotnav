@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Dict
+import torch
 import numpy as np
 
 from cotnav.utils.math_utils import (se3_matrix)
@@ -39,6 +40,29 @@ def get_dataset_info(cfg: Dict):
         robot = 'spot'
 
     return dataset, robot
+
+def pad_or_trunc_last(arr, max_actions: int):
+    """Return arr with first dim == max_actions.
+    If shorter, pad by repeating the last element; if longer, truncate.
+    Supports numpy arrays and torch tensors.
+    """
+    T = arr.shape[0]
+    if T == max_actions:
+        return arr
+    if T == 0:
+        raise ValueError("Cannot pad an empty action sequence (no last action).")
+    if T > max_actions:
+        return arr[:max_actions]
+
+    needed = max_actions - T
+    if isinstance(arr, torch.Tensor):
+        tail = arr[-1:].expand(needed, *arr.shape[1:])
+        return torch.cat([arr, tail], dim=0)
+    else:
+        # NumPy
+        last = arr[T-1:T]                      # shape (1, ...)
+        tail = np.repeat(last, needed, axis=0) # (needed, ...)
+        return np.concatenate([arr, tail], axis=0)
 
 """BEGIN DATASET SPECIFIC HELPERS"""
 
