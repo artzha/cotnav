@@ -218,15 +218,15 @@ class PIVOT:
   
         return image_msgs
 
-    def __call__(self, rgb_image: ImgLike, system_prompt: str, intermediate_prompts: List[str], calib: Calib):
+    def __call__(self, rgb_image: ImgLike, system_prompt: str, intermediate_prompts: List[str], calib: Calib, **call_kwargs: Any) -> Dict[str, Any]:
         """Upload the image and run a VLM call with a prompt is given"""
-        # TODO: Construct ChatThread from system_prompt and intermediate_prompts and rgb image context
         image_ctx_b = self.preprocess_image(rgb_image, calib)
 
         motion_arcs = self.motion_templates()
         intermediate_responses_b = []
         intermediate_costs_b = []
-        unified_actions_b = torch.empty((0, self._num_actions, self._action_dim), dtype=torch.float32)
+        unified_actions_b = torch.empty((0, self._num_actions, self._action_dim)).float()
+
         for b in range(len(image_ctx_b)):
             image_ctx = image_ctx_b[b]
             messages = []
@@ -266,10 +266,18 @@ class PIVOT:
             unified_actions_b = torch.cat(
                 (unified_actions_b, torch.from_numpy(unified_actions).unsqueeze(0)), dim=0)
 
+        B = len(intermediate_responses_b)
+        motion_arcs_xyz = torch.empty((len(motion_arcs), self._num_actions, self._action_dim)).float()
+        for k, arc in enumerate(motion_arcs):
+            arc_xy = torch.from_numpy(arc.sample_along_arc(num_samples=self._num_actions))  # (N, 2)
+            motion_arcs_xyz[k] = torch.cat((arc_xy, torch.full((arc_xy.shape[0], 1), -0.4)), dim=1)  # (N, 3)
+        motion_arcs_xyz_b = torch.tile(motion_arcs_xyz.unsqueeze(0), (B, 1, 1, 1))
+
         return {
             "responses": intermediate_responses_b,
             "costs": intermediate_costs_b,
-            "action_preds": unified_actions_b
+            "action_preds": unified_actions_b,        # [B x N x 3]
+            "motion_arcs": motion_arcs_xyz_b          # [B x K x N x 3]
         }
 
     def vqa(self, system_prompt: str, prompts: list(ChatQuery), resume: bool = False, **call_kwargs: Any) -> PivotVQAResult:

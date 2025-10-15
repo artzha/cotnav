@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import torch
 import numpy as np
 from cotnav.utils.metric_utils import MetricManager
+from cotnav.utils import train_utils as tu
 
 from cotnav.builders import build_from_path
 
@@ -94,24 +95,30 @@ class EpisodicRunner:
             bsz = _infer_batch_size(batch)
             for i in range(bsz):
                 rec = self._process_one(batch, i, step=n)
+                # TODO: Replace writer with wandb or tensorboard logging
                 self.writer.write(rec)
             n += 1
             if max_batches is not None and n >= max_batches:
                 break
+        # TODO: Log dataset aggregated metrics using self.metrics 
+
         self.writer.close()
 
     def _process_one(self, batch: Dict[str, Any], i: int, step: Optional[int] = None) -> Dict[str, Any]:
-        model_inputs = self._pack_for_model(batch, i)
-        pred = self.model(**model_inputs)
-        import pdb; pdb.set_trace()        
+        inputs = self._pack_for_model(batch, i)
+        outputs = self.model(**inputs)
+        merged_dict = tu.merge_dict(('inputs', inputs), ('outputs', outputs))
 
         # compute & accumulate metrics via the manager
-        metrics_now = self.metrics.update(pred, model_inputs, step=step, n=1)
+        metrics_now = self.metrics.update(merged_dict, step=step, n=1)
+
+        # TODO: Add visualization for the image if available
 
         infos = _pluck(batch, "infos", i) or {}
         return {
             "sequence": infos.get("sequence", None),
             "metrics": metrics_now,
+            # Add image to record
         }
 
     # ---------- helpers ----------

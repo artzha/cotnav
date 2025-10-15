@@ -42,5 +42,5 @@ model_inputs:
   out_key: "intermediate_prompts"
 - in_key: "calib"
   out_key: "calib"
-# - in_key: "action_label"
-#   out_key: "action_label"
+- in_key: "action_label"
+  out_key: "action_label"

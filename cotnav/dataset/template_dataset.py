@@ -350,7 +350,9 @@ class GenericNavDataset(Dataset):
             if num_actions is not None:
                 T_base_local = dh.pad_or_trunc_last(T_base_local, num_actions)
 
-            out_dict[name] = torch.from_numpy(T_base_local).to(dtype)  # (T,4,4)
+            T_base_local = torch.from_numpy(T_base_local).to(dtype)  # (T,4,4)
+            p_base_local = T_base_local[:, :3, 3]  # (T, 3)
+            out_dict[name] = p_base_local
 
         return out_dict
 
