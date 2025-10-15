@@ -5,11 +5,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import copy
 from pathlib import Path
 import tempfile
+import json
+import torch
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .infer_registry import get as get_infer
 
+from cotnav.models.vlms.interface import (ChatQuery)
 from cotnav.geometry.camera import (Calib, project_to_pixel)
 from cotnav.geometry.motion import MotionTemplateLibrary
 from typing import Iterable, Optional, TypedDict
@@ -29,28 +32,116 @@ def create_pivot(**kwargs: Any) -> Any:
 
 """END HELPER TYPEDEFS"""
 
-# Helper predicate
-def is_send_token(msg: Dict[str, Any]) -> bool:
-    """
-    Return True if the provided message content indicates a send token.
-    Accepts either a raw content dict or a ChatMessage wrapper.
-    """
-    if not isinstance(msg, dict):
-        return False
-    # If it's a full ChatMessage, inspect its first content element if present
-    if "content" in msg and isinstance(msg["content"], list) and msg["content"]:
-        c0 = msg["content"][0]
-        if isinstance(c0, dict) and c0.get("type") == SEND_TOKEN:
-            return True
-    # Otherwise, treat as a direct token dict
-    if msg.get("type") == SEND_TOKEN:
-        return True
-    return False
+def convert_response_to_unified_format(
+    response_json: Any,
+    dataset: str="",
+    mission: str="",
+    start_frame: int=0,
+    end_frame: int=0,
+    conditional_enabled: bool=False,
+) -> Dict[str, Any]:
+    """Convert VLM output(s) to the unified format."""
+
+    # --- small coercers ---
+    def coerce(obj: Any) -> Any:
+        # pydantic -> dict
+        try:
+            from pydantic import BaseModel  # type: ignore
+            if isinstance(obj, BaseModel):
+                return obj.model_dump()
+        except Exception:
+            pass
+        # str -> json
+        if isinstance(obj, str):
+            try:
+                return json.loads(obj)
+            except Exception:
+                return obj
+        return obj
+
+    def as_decisions(x: Any) -> List[Dict[str, Any]]:
+        x = coerce(x)
+        if isinstance(x, dict) and "decisions" in x:
+            return list(coerce(x["decisions"]))
+        if isinstance(x, list):
+            return list(x)
+        raise ValueError("Expected a list or a dict with key 'decisions'.")
+
+    def to_choice_reason(d: Any) -> Dict[str, Any]:
+        d = coerce(d) or {}
+        # print("D" , d)
+        # accept {choice, reason} or {final_choice, final_reason}
+        choice = d.get("choice", d.get("final_choice", None))
+        reason = d.get("reason", d.get("final_reason", ""))
+        # normalize choice to int when possible
+        try:
+            choice = int(choice)
+        except Exception:
+            pass
+        return {"choice": choice, "reason": str(reason)}
+
+    data = coerce(response_json)
+
+    out = {
+        "dataset": dataset,
+        "mission": mission,
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "intermediate_responses": [],
+        "final_response": {"stage": 0, "choice": None, "reason": ""},
+    }
+
+    if conditional_enabled:
+        # Expect [decisions_stage0, final_dict]
+        if not (isinstance(data, list) and len(data) >= 2):
+            raise ValueError("Conditional mode expects [decisions_list, final_dict].")
+        stage0 = as_decisions(data[0])
+        final_dict = to_choice_reason(as_decisions(data[-1])[0])
+        out["intermediate_responses"] = [
+            {"stage": 0, **to_choice_reason(d)} for d in stage0
+        ]
+        out["final_response"] = {"stage": 0, **final_dict}
+    else:
+        # Expect a single list (or dict with 'decisions'); last element is final
+        decs = [to_choice_reason(d) for d in as_decisions(data[0])]
+        if not decs:
+            raise ValueError("Non-conditional mode requires a non-empty decisions list.")
+        inter, final = decs[:-1], decs[-1]
+        out["intermediate_responses"] = [{"stage": 0, **d} for d in inter]
+        out["final_response"] = {"stage": 0, **final}
+
+    return out
+
+def convert_response_to_actions(
+    response: Dict[str, Any],
+    motion_arcs: Sequence[Any],
+    num_actions: int,
+    action_dim: int
+):
+    """Convert unified response to action list."""
+    choice = response.get("final_response", {}).get("choice", None)
+    assert choice is not None, "No final choice found in response."
+
+    selected_arc = motion_arcs[choice]
+    # Convert to xyz actions sampled along arc
+    arc_xy = selected_arc.sample_along_arc(num_samples=num_actions)  # (N, 2)
+
+    # Add constant z height
+    if action_dim == 3:
+        arc_xy = np.hstack((arc_xy, np.full((arc_xy.shape[0], 1), -0.4)))  # (N, 3)
+    
+    return arc_xy
 
 class PIVOT:
     """Minimal wrapper that forwards VQA calls to the configured VLM."""
 
-    def __init__(self, *, vlm: Dict[str, Any], motion_parameters: Dict[str, Any], **kwargs) -> None:
+    def __init__(
+        self, *, 
+        vlm: Dict[str, Any], 
+        motion_parameters: Dict[str, Any], 
+        annotation: Dict[str, Any], 
+        **kwargs
+    ) -> None:
         """
         Args:
             vlm: configuration dict for the VLM instance. See _init_vlm().
@@ -58,7 +149,7 @@ class PIVOT:
             annotation: (optional) dict of annotation settings (not used yet).
         """
         self.vlm = self._init_vlm(vlm)
-
+        self._ann_cfg = annotation
         generate_defaults = dict(vlm.get("generate_defaults", {}))
         self._default_instructions: Optional[str] = generate_defaults.pop("instructions", None)
         self._base_model_args: Dict[str, Any] = dict(vlm.get("model_args", {}))
@@ -74,6 +165,8 @@ class PIVOT:
         # Keep a copy of the motion configuration for downstream helpers.
         self.mp_cfg = copy.deepcopy(motion_parameters or {})
         self._initial_motion_cfg = copy.deepcopy(self.mp_cfg)
+        self._num_actions = vlm.get("num_actions", 20)
+        self._action_dim = vlm.get("action_dim", 3)  # e.g., (x,y,z)    
 
     def motion_templates(self):
         mp_cfg = copy.deepcopy(self.mp_cfg)
@@ -86,13 +179,100 @@ class PIVOT:
 
     # -------------------- Public API --------------------
 
-    def __call__(self, rgb_image: ImgLike, system_prompt: str, intermediate_prompts: List[str]):
+    def preprocess_image(self, image: ImgLike, calib: Calib) -> Image.Image:
+        """Convert input image to PIL.Image RGB."""
+        if isinstance(image, torch.Tensor):
+            image = image.cpu().numpy()
+            if image.dtype == np.float32:
+                image = (image * 255).astype(np.uint8)
+
+        # Convert to list of lists of PIL images
+        if image.ndim == 5: # [B, T, C, H, W]
+            image = image.transpose(0, 1, 3, 4, 2) # [B, T, H, W, C]
+            images = [ 
+                [self._to_pil(image[b, t]) for t in range(image.shape[1])] 
+                for b in range(image.shape[0])
+            ]
+        elif image.ndim == 4: # [T, C, H, W]
+            image = image.transpose(0, 2, 3, 1) # [T, H, W, C]
+            images = [[self._to_pil(image[t]) for t in range(image.shape[0])]]
+        else:
+            raise ValueError("Unsupported image shape for preprocess_image.")
+
+        # Annotate last image with motion templates if available
+        image_msgs = []
+        motion_arcs = self.motion_templates()
+        for b in range(len(images)):
+            if len(images[b]) == 0:
+                continue
+
+            last_img = images[b][-1]
+            annotated, _ = self.annotate_constant_curvature(
+                last_img,
+                arcs=motion_arcs,
+                calib=calib,
+                **self._ann_cfg
+            )
+            images[b][-1] = annotated
+            image_msgs.append([ChatQuery("image", "user", img) for img in images[b]])
+  
+        return image_msgs
+
+    def __call__(self, rgb_image: ImgLike, system_prompt: str, intermediate_prompts: List[str], calib: Calib):
         """Upload the image and run a VLM call with a prompt is given"""
         # TODO: Construct ChatThread from system_prompt and intermediate_prompts and rgb image context
-        import pdb; pdb.set_trace()
-        pass
+        image_ctx_b = self.preprocess_image(rgb_image, calib)
 
-    def vqa(self, system_prompt: str, prompts: ChatThread, resume: bool = False, **call_kwargs: Any) -> PivotVQAResult:
+        motion_arcs = self.motion_templates()
+        intermediate_responses_b = []
+        intermediate_costs_b = []
+        unified_actions_b = torch.empty((0, self._num_actions, self._action_dim), dtype=torch.float32)
+        for b in range(len(image_ctx_b)):
+            image_ctx = image_ctx_b[b]
+            messages = []
+            messages.extend(image_ctx)
+            # TODO: Annotate the last image with motion templates if available
+
+            intermediate_responses = []
+            intermediate_costs = {}
+            for prompt in intermediate_prompts:
+                messages.append(ChatQuery("text", "user", prompt))
+                response = self.vqa(system_prompt, messages)
+                response_output_str = json.dumps(response.output_parsed.model_dump(), ensure_ascii=False, indent=2)
+                stage_response = ChatQuery("text", "assistant", response_output_str)
+                messages.append(stage_response)
+                intermediate_responses.append(response_output_str)
+                cost, cost_breakdown = self.vlm.get_cost(
+                    self.vlm.get_model_name(),
+                    response.usage.input_tokens - response.usage.input_tokens_details.cached_tokens,
+                    response.usage.input_tokens_details.cached_tokens,
+                    response.usage.output_tokens
+                )
+                intermediate_costs[f"step_{len(intermediate_responses)}"] = {
+                    "cost": cost, "breakdown": cost_breakdown
+                }
+
+            unified_response = convert_response_to_unified_format(
+                intermediate_responses,
+                conditional_enabled=len(intermediate_responses) > 1
+            )
+            intermediate_responses_b.append(unified_response)
+            intermediate_costs_b.append(intermediate_costs)
+
+            # Convert to unified action format
+            unified_actions = convert_response_to_actions(
+                unified_response, motion_arcs,  self._num_actions, self._action_dim
+            )
+            unified_actions_b = torch.cat(
+                (unified_actions_b, torch.from_numpy(unified_actions).unsqueeze(0)), dim=0)
+
+        return {
+            "responses": intermediate_responses_b,
+            "costs": intermediate_costs_b,
+            "action_preds": unified_actions_b
+        }
+
+    def vqa(self, system_prompt: str, prompts: list(ChatQuery), resume: bool = False, **call_kwargs: Any) -> PivotVQAResult:
         """Upload the image and run a single VLM call with the provided question."""  
         inputs = self.vlm.compile_prompt(prompts)
         response = self.vlm.generate_response(

@@ -68,13 +68,22 @@ def build_transforms(tf_yaml: str | Path) -> TransformManager:
 
     return tm
 
-def load_intrinsics(cam_yaml: str | Path, tf_yaml: str | Path, world_frame: str) -> Calib:
+def load_intrinsics(cam_yaml: str | Path, tf_yaml: str | Path, world_frame: str, ds_rgb=1.0) -> Calib:
     cam_cfg = yaml.safe_load(Path(cam_yaml).read_text())
     K = np.array(cam_cfg["K"], dtype=float).reshape(3, 3)
     D = np.array(cam_cfg.get("D", []), dtype=float)
     R = np.array(cam_cfg.get("R", np.eye(3)), dtype=float).reshape(3, 3)
     P = np.array(cam_cfg.get("P", []), dtype=float).reshape(3, 4) if "P" in cam_cfg else np.hstack((K, np.zeros((3, 1))))
     H, W = int(cam_cfg["image_height"]), int(cam_cfg["image_width"])
+    # Apply downsampling if needed
+    if ds_rgb != 1.0 and ds_rgb > 0.0:
+        assert ds_rgb >= 1.0, "ds_rgb should be >= 1.0 for downsampling."
+        scale = 1.0 / ds_rgb
+        K[:2, :] *= scale
+        P[:2, :] *= scale
+        H = int(H * scale)
+        W = int(W * scale)
+
     cam_frame = cam_cfg["frame_id"]
     tm = build_transforms(tf_yaml)
 

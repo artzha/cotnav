@@ -278,7 +278,10 @@ class GenericNavDataset(Dataset):
         assert tf_path.exists(), f"Missing tf file: {tf_path}"
         world_frame = key_cfg['kwargs'].get('world_frame', 'base')
 
-        calib = load_intrinsics(intr_path, tf_path, world_frame)
+        # Resize intrinsics if needed
+        ds_rgb = key_cfg['kwargs'].get('ds_rgb', 1.0)
+        calib = load_intrinsics(intr_path, tf_path, world_frame, ds_rgb=ds_rgb)
+
         return calib
 
     def _load_image(self, infos: Dict[str, Any], key_cfg: Dict[str, Any]) -> torch.Tensor:

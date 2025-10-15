@@ -25,9 +25,9 @@ motion_parameters:
 
 annotation:
   thickness: 5
-  endpoint_radius: 25
+  endpoint_radius: 13
   overlay_alpha: 0.9
-  label_font_size: 40
+  label_font_size: 20
   label_font_color: [0, 0, 0]
 
 # Map dataset keys → model keys (your convention)
@@ -40,5 +40,7 @@ model_inputs:
   out_key: "system_prompt"
 - in_key: "intermediate_prompts"
   out_key: "intermediate_prompts"
+- in_key: "calib"
+  out_key: "calib"
 # - in_key: "action_label"
 #   out_key: "action_label"

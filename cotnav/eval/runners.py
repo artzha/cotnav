@@ -103,6 +103,7 @@ class EpisodicRunner:
     def _process_one(self, batch: Dict[str, Any], i: int, step: Optional[int] = None) -> Dict[str, Any]:
         model_inputs = self._pack_for_model(batch, i)
         pred = self.model(**model_inputs)
+        import pdb; pdb.set_trace()        
 
         # compute & accumulate metrics via the manager
         metrics_now = self.metrics.update(pred, model_inputs, step=step, n=1)
@@ -132,32 +133,6 @@ class EpisodicRunner:
             else:
                 out[out_key] = v
         return out
-
-    # def _forward(self, model_inputs: Dict[str, Any]) -> Dict[str, Any]:
-    #     """
-    #     Try common call patterns and wrap outputs into a dict.
-    #     """
-    #     # kwargs
-    #     try:
-    #         out = self.model(**model_inputs)
-    #         return out if isinstance(out, dict) else {"outputs": out}
-    #     except TypeError:
-    #         pass
-    #     # single-dict
-    #     try:
-    #         out = self.model(model_inputs)
-    #         return out if isinstance(out, dict) else {"outputs": out}
-    #     except TypeError:
-    #         pass
-    #     # forward_eval with cfg
-    #     if hasattr(self.model, "forward_eval"):
-    #         out = self.model.forward_eval(model_inputs, cfg=self.model_cfg)
-    #         return out if isinstance(out, dict) else {"outputs": out}
-    #     # forward(dict)
-    #     if hasattr(self.model, "forward"):
-    #         out = self.model.forward(model_inputs)
-    #         return out if isinstance(out, dict) else {"outputs": out}
-    #     raise RuntimeError("Model is not callable with provided inputs")
 
 # ----------------------------
 # Utilities

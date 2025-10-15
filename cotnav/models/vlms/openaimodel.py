@@ -13,42 +13,10 @@ from pathlib import Path
 from openai import OpenAI
 from openai import APIError, RateLimitError, APITimeoutError
 import tempfile, numpy as np, os
-from enum import Enum
 from pydantic import BaseModel, Field, conint, constr
 
+from cotnav.models.vlms.interface import ( ContentType, Role, ChatQuery )
 from cotnav.utils.log_utils import logging
-
-# ----- Types -----
-# Part = Dict[str, Any]                 # {"type":"input_text",...} | {"type":"input_image",...} | {"type":"input_file",...}
-# Message = Dict[str, Any]
-# Prompt = Union[str, Sequence[Part]]   # plain string OR list of parts
-
-
-# Canonical content type enum
-class ContentType(str, Enum):
-    TEXT = "text"
-    IMAGE = "image"
-
-# Common roles enum
-class Role(str, Enum):
-    USER = "user"
-    DEVELOPER = "developer"
-    SYSTEM = "system"
-    ASSISTANT = "assistant"
-
-@dataclass
-class ChatQuery:
-    type: str = ContentType.TEXT.value
-    role: str = Role.USER.value
-    content: Any = field(default_factory=str)
-
-    def __post_init__(self) -> None:
-        # Normalize simple content values into a list for consistent downstream use.
-        if isinstance(self.content, (str, dict)):
-            self.content = self.content
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {"type": self.type, "role": self.role, "content": self.content}
 
 # For structured output
 class ChoiceReason(BaseModel):
@@ -85,51 +53,6 @@ class ResponsesMessage:
 
 RM = ResponsesMessage()
 
-def get_openai_cost(
-    model_name, input_tokens=0, cached_tokens=0, output_tokens=0
-):
-    """Get the cost of an OpenAI response."""
-    # Price table: https://openai.com/api/pricing/
-    # Prices are per 1M tokens, as of July 12, 2025.
-    if model_name == "o3":
-        price_input_tokens = 2.0
-        price_cached_tokens = 0.5
-        price_output_tokens = 8.0
-    elif model_name == "o3-mini":
-        price_input_tokens = 1.1
-        price_cached_tokens = 0.55
-        price_output_tokens = 4.4
-    elif model_name == "o4-mini":
-        price_input_tokens = 1.1
-        price_cached_tokens = 0.275
-        price_output_tokens = 4.4
-    elif model_name == "gpt-5":
-        price_input_tokens = 1.25
-        price_cached_tokens = 0.125
-        price_output_tokens = 10.0
-    elif model_name == "gpt-4o":
-        price_input_tokens = 2.50
-        price_cached_tokens = 1.25
-        price_output_tokens = 10.0
-    elif model_name == "gpt-4o-mini":
-        price_input_tokens = 0.15
-        price_cached_tokens = 0.075
-        price_output_tokens = 0.60
-    else:
-        raise ValueError(f"Model {model_name} pricing not known")
-
-    input_cost = (input_tokens / 1_000_000) * price_input_tokens
-    cached_cost = (cached_tokens / 1_000_000) * price_cached_tokens
-    output_cost = (output_tokens / 1_000_000) * price_output_tokens
-
-    total_cost = input_cost + cached_cost + output_cost
-
-    return total_cost, {
-        "input_cost": input_cost,
-        "cached_cost": cached_cost,
-        "output_cost": output_cost
-    }
-
 class OpenAIModel:
     """
     Minimal Responses-API wrapper.
@@ -159,6 +82,9 @@ class OpenAIModel:
         self._default_role = default_role
 
     # -------------- Owned conveniences --------------
+
+    def get_model_name(self) -> str:
+        return self.default_model_args.get("model", "unknown")
 
     def set_default_model_args(self, **updates: Any) -> None:
         self.default_model_args.update({k: v for k, v in updates.items() if v is not None})
@@ -191,7 +117,7 @@ class OpenAIModel:
         else:
             return None
 
-    def compile_prompt(self, prompts: ChatThread):
+    def compile_prompt(self, prompts: List[ChatQuery]):
         messages = []
         for prompt in prompts:
             part = self.format_content(prompt)
@@ -371,6 +297,52 @@ class OpenAIModel:
             self.delete_file(batch.output_file_id)
         
         return results
+
+    @staticmethod
+    def get_cost(
+        model_name, input_tokens=0, cached_tokens=0, output_tokens=0
+    ):
+        """Get the cost of an OpenAI response."""
+        # Price table: https://openai.com/api/pricing/
+        # Prices are per 1M tokens, as of July 12, 2025.
+        if model_name == "o3":
+            price_input_tokens = 2.0
+            price_cached_tokens = 0.5
+            price_output_tokens = 8.0
+        elif model_name == "o3-mini":
+            price_input_tokens = 1.1
+            price_cached_tokens = 0.55
+            price_output_tokens = 4.4
+        elif model_name == "o4-mini":
+            price_input_tokens = 1.1
+            price_cached_tokens = 0.275
+            price_output_tokens = 4.4
+        elif model_name == "gpt-5":
+            price_input_tokens = 1.25
+            price_cached_tokens = 0.125
+            price_output_tokens = 10.0
+        elif model_name == "gpt-4o":
+            price_input_tokens = 2.50
+            price_cached_tokens = 1.25
+            price_output_tokens = 10.0
+        elif model_name == "gpt-4o-mini":
+            price_input_tokens = 0.15
+            price_cached_tokens = 0.075
+            price_output_tokens = 0.60
+        else:
+            raise ValueError(f"Model {model_name} pricing not known")
+
+        input_cost = (input_tokens / 1_000_000) * price_input_tokens
+        cached_cost = (cached_tokens / 1_000_000) * price_cached_tokens
+        output_cost = (output_tokens / 1_000_000) * price_output_tokens
+
+        total_cost = input_cost + cached_cost + output_cost
+
+        return total_cost, {
+            "input_cost": input_cost,
+            "cached_cost": cached_cost,
+            "output_cost": output_cost
+        }
 
 def _img_to_buf(img):
     if isinstance(img, np.ndarray):

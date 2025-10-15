@@ -22,6 +22,7 @@ load_cfgs:
       intr_filename: 'front_camera_info_anymal.yaml'
       tf_filename: 'tf_static_anymal.yaml'
       world_frame: 'base'
+      ds_rgb: 4.0 # [u, v]
   - name: 'front_rgb'
     type: 'image'
     kwargs:

@@ -1,4 +1,4 @@
-# cotnav/models/vlms/infer_registry.py
+# cotnav/models/vlms/registry.py
 from importlib import import_module
 from typing import Any, Dict
 
